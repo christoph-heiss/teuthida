@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "teuthida"
+version = "0.1.0"
+description = ""
+authors = ["Christoph Heiss <contact@christoph-heiss.at>"]
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+amaranth = "^0.3"
+
+[tool.poetry.dev-dependencies]
+
+[tool.poetry.scripts]
+sim = "teuthida.sim:start"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
