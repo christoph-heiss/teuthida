@@ -1,13 +1,18 @@
 from amaranth import *
 from nmigen.back.pysim import Simulator, Delay, Settle
-
-def process():
-    yield
+from . import Cpu, PipelineStage
 
 def start():
-    m = Module()
-    sim = Simulator(m)
-    sim.add_clock(1e-6) # 1 MHz
-    sim.add_process(process)
+    cpu = Cpu()
 
-    sim.run()
+    def process():
+        # Run for 10 cycles
+        for _ in range(10 * len(PipelineStage)):
+            yield
+
+    sim = Simulator(cpu)
+    sim.add_clock(1e-6) # 1 MHz
+    sim.add_sync_process(process)
+
+    with sim.write_vcd("teuthida.vcd", "teuthida.gtkw"):
+        sim.run()
