@@ -13,6 +13,7 @@ amaranth = "^0.3"
 
 [tool.poetry.scripts]
 sim = "teuthida.sim:start"
+verilog = "teuthida.gen:gen_verilog"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
