@@ -9,13 +9,13 @@ class AluOp(IntEnum):
 class Alu(Elaboratable):
     def __init__(self, xlen=DEFAULT_XLEN):
         # Inputs
-        self.en = Signal()
-        self.op = Signal(range(len(AluOp)))
-        self.in1 = Signal(xlen)
-        self.in2 = Signal(xlen)
+        self.en = Signal(name='alu_en')
+        self.op = Signal(AluOp, name='alu_op')
+        self.in1 = Signal(xlen, name='alu_in1')
+        self.in2 = Signal(xlen, name='alu_in2')
 
         # Outputs
-        self.out = Signal(xlen)
+        self.out = Signal(xlen, name='alu_out')
 
     def elaborate(self, _):
         m = Module()
@@ -27,7 +27,7 @@ class Alu(Elaboratable):
 
         return m
 
-class Registeregf(Elaboratable):
+class RegisterFile(Elaboratable):
     def __init__(self, xlen=DEFAULT_XLEN):
         # State
         self.regs = Array([Signal(xlen)] * 30) # x1 - x31
@@ -69,20 +69,21 @@ class Registeregf(Elaboratable):
 
 class BootRom(Elaboratable):
     def __init__(self, xlen=DEFAULT_XLEN):
+        # State
+        data = [
+            0x0000_0533, # 0000_0000:  add  a0, x0, x0
+            0x0420_0593, # 0000_0004:  addi a1, x0, 0x42   (aka: li a1, 0x42)
+            0x00b5_0533, # 0000_0008:  add  a0, a0, a1
+            0xffdf_f06f, # 0000_000c:  jal  x0, -4         (aka: j 0000_0008)
+        ]
+
+        self.mem = Memory(width=32, depth=len(data), init=data)
+
         # Inputs
         self.addr = Signal(xlen)
 
         # Outputs
-        self.out = Signal(xlen)
-
-        # State
-        data = [
-            0x0000_0533, # add  a0, x0, x0
-            0x0420_0593, # addi a1, x0, 0x42   (aka li a1, 0x42)
-            0x00b5_0533, # add  a0, a0, a1
-        ]
-
-        self.mem = Memory(width=xlen, depth=len(data), init=data)
+        self.out = Signal(32)
 
     def elaborate(self, _):
         m = Module()
@@ -93,8 +94,10 @@ class BootRom(Elaboratable):
         return m
 
 class Opcode(IntEnum):
-    REG = 0b0110011 # Register-only inst
-    IMM = 0b0010011 # Immediate inst
+    REG  = 0b0110011 # Register-only inst
+    IMM  = 0b0010011 # Immediate inst
+    JAL  = 0b1101111
+    JARL = 0b1100111
 
 class Funct3(IntEnum):
     IMM_ADDI = 0b000
@@ -103,18 +106,19 @@ class Funct7(IntEnum):
     REG_ADD  = 0b000_0000
 
 class InstructionDecoder(Elaboratable):
-    def __init__(self, alu, regf, xlen=DEFAULT_XLEN):
+    def __init__(self, alu, regs, xlen=DEFAULT_XLEN):
         # Links
         self.alu = alu
-        self.regf = regf
+        self.regs = regs
 
         # Inputs
-        self.inst = Signal(xlen)
+        self.inst = Signal(32)
 
         # Outputs
         self.illegal = Signal()
         self.alu_en = Signal()
         self.rd = Signal(5)
+        self.pc_offset = Signal(signed(21))
         self.regwrite = Signal()
 
     def elaborate(self, _):
@@ -125,39 +129,47 @@ class InstructionDecoder(Elaboratable):
         #    +--------------+---------+---------+--------+--------+--------------+
         #  R |    funct7    |   rs2   |   rs1   | funct3 |   rd   |    opcode    |
         #    +--------------+---------+---------+--------+--------+--------------+
-        #  I |    immediate [11:0]    |   rs1   | funct3 |   rd   |    opcode    |
+        #  I |        imm[11:0]       |   rs1   | funct3 |   rd   |    opcode    |
         #    +------------------------+---------+--------+--------+--------------+
         #
+        #    |    31   | 30         21 |    20   | 30       21  | 11   7 | 6          0 |
+        #    +---------+---------------+---------+--------------+--------+--------------+
+        #  J | imm[20] |   imm[10:1]   | imm[11] |  imm[19:12]  |   rd   |    opcode    |
+        #    +-------------------------+---------+--------------+--------+--------------+
         #
 
-        op = Signal(7)
+        op = Signal(Opcode)
         rs1 = Signal(5)
         rs2 = Signal(5)
-        funct3 = Signal(3)
-        funct7 = Signal(7)
-        imm = Signal(12)
+        funct3 = Signal(Funct3)
+        funct7 = Signal(Funct7)
+        i_imm = Signal(12)
+        j_imm = Signal(20)
 
         m.d.comb += [
+            # Decode instruction elements
             op.eq(self.inst[:7]),
             rs1.eq(self.inst[15:20]),
-            rs2.eq(self.inst[20:25]),
-            funct3.eq(self.inst[12:15]),
-            funct7.eq(self.inst[25:32]),
-            imm.eq(self.inst[20:32]),
-            self.regf.sel1.eq(rs1),
-            self.alu.in1.eq(self.regf.out1),
             self.rd.eq(self.inst[7:12]),
+
+            # Always set rs1 contents as ALU in1
+            self.regs.sel1.eq(rs1),
+            self.alu.in1.eq(self.regs.out1),
         ]
 
         with m.Switch(op):
             with m.Case(Opcode.REG):
-                m.d.comb += self.regwrite.eq(1);
+                m.d.comb += [
+                    funct7.eq(self.inst[25:32]),
+                    rs2.eq(self.inst[20:25]),
+                    self.regwrite.eq(1),
+                ]
 
                 with m.Switch(funct7):
                     with m.Case(Funct7.REG_ADD): # add rd, rs1, rs2
                         m.d.comb += [
-                            self.regf.sel2.eq(rs2),
-                            self.alu.in2.eq(self.regf.out2),
+                            self.regs.sel2.eq(rs2),
+                            self.alu.in2.eq(self.regs.out2),
                             self.alu.op.eq(AluOp.ADD),
                             self.alu_en.eq(1),
                         ]
@@ -166,18 +178,48 @@ class InstructionDecoder(Elaboratable):
                         m.d.comb += self.illegal.eq(1)
 
             with m.Case(Opcode.IMM):
-                m.d.comb += self.regwrite.eq(1);
+                m.d.comb += [
+                    funct3.eq(self.inst[12:15]),
+                    i_imm.eq(self.inst[20:32]),
+                    self.regwrite.eq(1),
+                ]
 
                 with m.Switch(funct3):
-                    with m.Case(Funct3.IMM_ADDI):
+                    with m.Case(Funct3.IMM_ADDI): # addi rd, rs1, <imm>
                         m.d.comb += [
-                            self.alu.in2.eq(imm),
+                            self.alu.in2.eq(i_imm),
                             self.alu.op.eq(AluOp.ADD),
                             self.alu_en.eq(1),
                         ]
 
                     with m.Default():
                         m.d.comb += self.illegal.eq(1)
+
+            with m.Case(Opcode.JAL):              # jal rd, <imm>
+                with m.If(self.rd > 0):
+                    m.d.comb += [
+                        self.regwrite.eq(1),
+
+                        # HACK: The old PC is pass-thru'd the ALU to ease
+                        # the REGWRITE stage for now
+                        self.alu.in1.eq(self.regs.pc),
+                        self.alu.in2.eq(0),
+                        self.alu.op.eq(AluOp.ADD),
+                        self.alu_en.eq(1),
+                    ]
+
+                m.d.comb += [
+                    # Decode offset directly into pc_offset wire
+                    # The first bit is intentionally left zero, the JAL
+                    # immediate must be shifted left by 1 anyways
+                    # An additional `2` is subtracted here from the unshifted
+                    # value to counter the early PC increment done in the
+                    # FETCH stage.
+                    self.pc_offset[1:11].eq(self.inst[21:31] - 2),
+                    self.pc_offset[11].eq(self.inst[20]),
+                    self.pc_offset[12:20].eq(self.inst[12:20]),
+                    self.pc_offset[20].eq(self.inst[31]),
+                ]
 
             with m.Default():
                 m.d.comb += self.illegal.eq(1)
@@ -187,60 +229,67 @@ class InstructionDecoder(Elaboratable):
 class PipelineStage(IntEnum):
     FETCH = 0
     DECODE = 1
-    EXECUTE = 2
-    MEMACCESS = 3
-    REGWRITE = 4
+    MEMACCESS = 2
+    EXECUTE = 3
+    WRITEBACK = 4
 
 class Cpu(Elaboratable):
     def __init__(self, xlen=DEFAULT_XLEN):
         self.cycles = Signal(xlen)
-        self.stage = Signal(range(len(PipelineStage)))
+        self.stage = Signal(PipelineStage)
         self.halt = Signal()
 
-    def elaborate(self, platform):
+    def elaborate(self, _):
         m = Module()
 
         alu = m.submodules.alu = Alu()
         bootrom = m.submodules.bootrom = BootRom()
-        regf = m.submodules.regf = Registeregf()
-        dec = m.submodules.dec = InstructionDecoder(alu, regf)
+        regs = m.submodules.regs = RegisterFile()
+        dec = m.submodules.dec = InstructionDecoder(alu, regs)
 
         with m.If(self.halt == 0):
             with m.Switch(self.stage):
                 with m.Case(PipelineStage.FETCH):
-                    m.d.sync += [
+                    m.d.comb += [
                         # Reset possibly-modifiying state
-                        alu.en.eq(0),
-                        regf.wren.eq(0),
+                        regs.wren.eq(0),
 
-                        regf.pc.eq(regf.pc + 4),
-                        bootrom.addr.eq(regf.pc),
+                        # Read instruction from BootROM and feed into decoder
+                        bootrom.addr.eq(regs.pc),
+                    ]
+
+                    m.d.sync += [
+                        # Feed fetched instruction into decoder
                         dec.inst.eq(bootrom.out),
+
+                        # Increment PC
+                        regs.pc.eq(regs.pc + 4),
                     ]
 
                 with m.Case(PipelineStage.DECODE):
-                    # Fully halt in case there an illegal instruction is encountered
+                    # Fully halt in case an illegal instruction is encountered
                     m.d.sync += self.halt.eq(dec.illegal)
+
+                with m.Case(PipelineStage.MEMACCESS):
+                    pass
 
                 with m.Case(PipelineStage.EXECUTE):
                     m.d.sync += [
                         alu.en.eq(dec.alu_en),
+                        regs.pc.eq(regs.pc + Mux(dec.pc_offset != 0, dec.pc_offset - 4, 0)),
                     ]
 
-                with m.Case(PipelineStage.MEMACCESS):
-                    m.d.sync += [
-                        # alu.en.eq(0),
-                    ]
+                with m.Case(PipelineStage.WRITEBACK):
+                    m.d.sync += alu.en.eq(0)
 
-                with m.Case(PipelineStage.REGWRITE):
                     with m.If(dec.regwrite):
-                        m.d.sync += [
-                            regf.wrsel.eq(dec.rd),
-                            regf.wrval.eq(alu.out),
-                            regf.wren.eq(1),
+                        m.d.comb += [
+                            regs.wrsel.eq(dec.rd),
+                            regs.wrval.eq(alu.out),
+                            regs.wren.eq(1),
                         ]
 
-            with m.If(self.stage == PipelineStage.REGWRITE):
+            with m.If(self.stage == PipelineStage.WRITEBACK):
                 m.d.sync += [
                     self.stage.eq(PipelineStage.FETCH),
                     self.cycles.eq(self.cycles + 1),
