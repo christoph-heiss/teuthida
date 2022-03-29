@@ -1,5 +1,5 @@
 from amaranth import *
-from nmigen.back.pysim import Simulator, Delay, Settle
+from amaranth.sim import *
 from . import Cpu, PipelineStage
 
 def start():
