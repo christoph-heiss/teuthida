@@ -20,7 +20,7 @@ class Alu(Elaboratable):
     def elaborate(self, _):
         m = Module()
 
-        with m.If(self.en == 1):
+        with m.If(self.en):
             with m.Switch(self.op):
                 with m.Case(AluOp.ADD):
                     m.d.comb += self.out.eq(self.in1 + self.in2)
@@ -44,12 +44,14 @@ class RegisterFile(Elaboratable):
         self.out1 = Signal(xlen)
         self.out2 = Signal(xlen)
 
+        self.dbgout = Signal(xlen)
+
     def elaborate(self, _):
         m = Module()
 
         with m.Switch(self.sel1):
             with m.Case(0):
-                # TODO: Optimize away everywhere else
+                # TODO: Optimize away in decoder
                 m.d.comb += self.out1.eq(0)
             with m.Default():
                 m.d.comb += self.out1.eq(self.regs[self.sel1 - 1])
@@ -60,8 +62,8 @@ class RegisterFile(Elaboratable):
             with m.Default():
                 m.d.comb += self.out2.eq(self.regs[self.sel2 - 1])
 
-        with m.If(self.wren == 1):
-            # TODO: Eliminate need for checking for x0
+        with m.If(self.wren):
+            # TODO: Optimize x0 check away in decoder
             with m.If((self.wrsel > 0) & (self.wrsel < 31)):
                 m.d.comb += self.regs[self.wrsel - 1].eq(self.wrval)
 
@@ -247,7 +249,7 @@ class Cpu(Elaboratable):
         regs = m.submodules.regs = RegisterFile()
         dec = m.submodules.dec = InstructionDecoder(alu, regs)
 
-        with m.If(self.halt == 0):
+        with m.If(~self.halt):
             with m.Switch(self.stage):
                 with m.Case(PipelineStage.FETCH):
                     m.d.comb += [
