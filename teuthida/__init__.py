@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+
 from amaranth import *
 from enum import IntEnum
 

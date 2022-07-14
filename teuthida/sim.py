@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+
 from amaranth import *
 from amaranth.sim import *
 from . import Cpu, PipelineStage

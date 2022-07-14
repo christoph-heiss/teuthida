@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+
 from amaranth.back import verilog
 from . import Cpu
 
